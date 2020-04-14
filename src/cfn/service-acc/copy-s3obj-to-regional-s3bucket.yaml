@@ -1,0 +1,175 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+###############
+#
+# Copies S3 objects to local S3 bucket. This is usefule if you have lambfa functions from a different region 
+#
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Copy S3 object to local S3 bucket
+
+Parameters:
+
+  S3BucketSources:
+    Type: String
+    Description: S3 bucket with sources 
+    MaxLength: 63
+    MinLength: 3
+    Default: my-test-bucket
+
+  S3SourcesPrefix:
+    Type: String
+    Description: S3 prefix with sources WITH ending slash  
+    MaxLength: 63
+    MinLength: 3
+    Default: prefix
+
+  S3Objects:
+    Type: CommaDelimitedList
+    Description: S3 Object to be copied
+    Default: test1.json, test2.json
+
+Resources:
+
+  S3BucketRegionSources:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+    DeletionPolicy: Delete
+
+  CopyZips:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - S3BucketRegionSources
+    Properties:
+      ServiceToken: !GetAtt 'CopyZipsFunction.Arn'
+      DestBucket:  !Ref 'S3BucketRegionSources'
+      SourceBucket: !Ref 'S3BucketSources'
+      SourcePrefix: !Ref 'S3SourcesPrefix'
+      Counter: "1"
+      Objects: !Ref S3Objects
+
+  CopyZipsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: lambda-copier
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectTagging
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${S3BucketSources}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${S3BucketSources}'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${S3BucketRegionSources}'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:PutObjectTagging
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${S3BucketRegionSources}/*'
+
+  CopyZipsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName:  "CopyZipsFunction"
+      Description: Copies objects from a source S3 bucket to a destination
+      Handler: index.handler
+      Runtime: python3.6
+      Role: !GetAtt 'CopyZipsRole.Arn'
+      Timeout: 240
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import threading
+          import boto3
+          import cfnresponse
+
+          def copy_objects(source_bucket, dest_bucket, objects, prefix):
+              s3 = boto3.client('s3')
+              for o in objects:
+                  key =  prefix  + o 
+                  copy_source = {
+                      'Bucket': source_bucket,
+                      'Key': key
+                  }
+                  print('copy source_bucket:' + source_bucket + ' destination_bucket: '+ dest_bucket + '  key: ' + key) 
+                  s3.copy_object(CopySource=copy_source, Bucket=dest_bucket, Key=key)
+
+          def delete_objects(bucket, objects, prefix):
+              s3 = boto3.client('s3')
+              objects = {'Objects': [{'Key':  prefix  + o} for o in objects]}
+              s3.delete_objects(Bucket=bucket, Delete=objects)
+
+          def timeout(event, context):
+              logging.error('Execution is about to time out, sending failure response to CloudFormation')
+              cfnresponse.send(event, context, cfnresponse.FAILED, {}, None)
+
+          def handler(event, context):
+              # make sure we send a failure to CloudFormation if the function is going to timeout
+              timer = threading.Timer((context.get_remaining_time_in_millis() / 1000.00) - 0.5, timeout, args=[event, context])
+              timer.start()
+
+              print('Received event:  %s' % json.dumps(event))
+              status = cfnresponse.SUCCESS
+              try:
+                  source_bucket = event['ResourceProperties']['SourceBucket']
+                  source_prefix = event['ResourceProperties']['SourcePrefix']
+                  dest_bucket = event['ResourceProperties']['DestBucket']
+                  if source_bucket == dest_bucket:
+                    return 
+                  objects = event['ResourceProperties']['Objects']
+                  if event['RequestType'] == 'Delete':
+                      delete_objects(dest_bucket,  objects, source_prefix)
+                  else:
+                      copy_objects(source_bucket, dest_bucket,  objects, source_prefix)
+              except Exception as e:
+                  logging.error('Exception: %s' % e, exc_info=True)
+                  status = cfnresponse.FAILED
+              finally:
+                  timer.cancel()
+                  cfnresponse.send(event, context, status, {}, None)
+
+Outputs: 
+ 
+  RegionalS3Bucket:
+    Description:  Regional S3 bucket 
+    Value: !Ref S3BucketRegionSources

@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Custom actions for Security Hub 
+
+Parameters:
+
+  LambdaIsolateEc2Arn:
+    Type: String
+    Description: ARN of Lambda for Isolation EC2
+
+  LambdaBlockPrincipalArn:
+    Type: String
+    Description: ARN of Lambda for Blocking Principal
+
+  AlertSnsArn:
+    Type: String
+    Description: ARN of Sns for notificaiton
+  
+  S3BucketSources: 
+    Type: String
+    Description: Sources for custom resources
+
+  S3SourcesPrefix: 
+    Type: String
+    Description: Prefix for the sources 
+
+Resources:
+
+  # Custom resources to create custom action 
+  CustomActions:
+   Type: AWS::CloudFormation::CustomResource
+   Properties:
+    ServiceToken: !GetAtt 'CustomActionsFunction.Arn'
+    AccountId: !Ref AWS::AccountId
+    CustomActions:
+      - 
+        Name: Isolate EC2
+        ActionId: IsolateEc2
+        Description: Triggers isolation of Ec2
+        Target: !Ref LambdaIsolateEc2Arn
+      - 
+        Name:  Send SNS
+        ActionId: SendSns
+        Description: Sends SNS with details 
+        Target: !Ref AlertSnsArn
+      - 
+        Name: Block IAM Principal 
+        ActionId: BlockIamPrincipal
+        Description: Blocks a IAM Principal 
+        Target: !Ref LambdaBlockPrincipalArn
+
+# Role to remediation 
+  CustomActionsRole:
+   Type: AWS::IAM::Role
+   Properties:
+    AssumeRolePolicyDocument:
+     Version: '2012-10-17'
+     Statement:
+      - Effect: Allow
+        Principal:
+          Service: lambda.amazonaws.com
+        Action: sts:AssumeRole
+    ManagedPolicyArns:
+     - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Path: /
+    Policies:
+     - PolicyName: lambda-custom
+       PolicyDocument:
+           Version: '2012-10-17'
+           Statement:
+            - Effect: Allow
+              Action:
+               - securityhub:CreateActionTarget
+               - securityhub:DeleteActionTarget
+               - securityhub:DescribeHub
+               - events:DeleteRule
+               - events:PutRule
+               - events:PutTargets
+               - events:RemoveTargets
+               - events:RemovePermission
+               - events:AddPermission
+               - lambda:AddPermission
+               - lambda:RemovePermission
+              Resource: "*"
+
+  CustomActionsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub SecurityHub-DefineCustomActions
+      Description: Creates custom actions in Security Hub 
+      Handler: security_hub_custom_actions.lambda_handler
+      Runtime: python3.7
+      Role: !GetAtt CustomActionsRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref S3BucketSources
+        S3Key: !Sub '${S3SourcesPrefix}master_lambda_functions.zip'

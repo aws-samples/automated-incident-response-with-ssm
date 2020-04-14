@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Enable AWS Config
+
+Parameters:
+  AllSupported:
+    Type: String
+    Default: 'true'
+    Description: Indicates whether to record all supported resource types.
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  IncludeGlobalResourceTypes:
+    Type: String
+    Default: 'true'
+    Description: Indicates whether AWS Config records all supported global resource types.
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  ResourceTypes:
+    Type: CommaDelimitedList
+    Description: A list of valid AWS resource types to include in this recording group. Eg. AWS::CloudTrail::Trail
+    Default: AWS::CloudTrail::Trail
+
+  DeliveryChannelName:
+    Type: String
+    Default: 'DeliveryChannel'
+    Description: The name of the delivery channel.
+
+  Frequency:
+    Type: String
+    Default: 24hours
+    Description: The frequency with which AWS Config delivers configuration snapshots.
+    AllowedValues:
+      - 1hour
+      - 3hours
+      - 6hours
+      - 12hours
+      - 24hours
+
+  TopicArn:
+    Type: String
+    Default: ''
+    Description: The Amazon Resource Name (ARN) of the Amazon Simple Notification Service (Amazon SNS) topic that AWS Config delivers notifications to.
+
+  BucketName:
+    Type: String
+    Default: ''
+    Description: Bucket name from the Logging Account
+
+Conditions:
+  IsAllSupported: !Equals
+    - !Ref AllSupported
+    - 'true'
+  IsGeneratedDeliveryChannelName: !Equals
+    - !Ref DeliveryChannelName
+    - ''
+
+Mappings:
+  Settings:
+    FrequencyMap:
+      1hour   : One_Hour
+      3hours  : Three_Hours
+      6hours  : Six_Hours
+      12hours : Twelve_Hours
+      24hours : TwentyFour_Hours
+
+Resources:
+
+  ConfigRecorderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - config.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSConfigRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  ConfigRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    Properties:
+      RoleARN: !GetAtt ConfigRecorderRole.Arn
+      RecordingGroup:
+        AllSupported: !Ref AllSupported
+        IncludeGlobalResourceTypes: !Ref IncludeGlobalResourceTypes
+        ResourceTypes: !If
+          - IsAllSupported
+          - !Ref AWS::NoValue
+          - !Ref ResourceTypes
+
+  ConfigDeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    Properties:
+      Name: !If
+        - IsGeneratedDeliveryChannelName
+        - !Ref AWS::NoValue
+        - !Ref DeliveryChannelName
+      ConfigSnapshotDeliveryProperties:
+        DeliveryFrequency: !FindInMap
+          - Settings
+          - FrequencyMap
+          - !Ref Frequency
+      S3BucketName: !Ref BucketName
+      SnsTopicARN: !Ref TopicArn

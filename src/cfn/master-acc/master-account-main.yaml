@@ -1,0 +1,574 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloud Formation template for incident response actions 
+
+Parameters:
+
+  S3BucketSources:
+    Type: String
+    Description: S3 bucket with sources 
+    MaxLength: 63
+    MinLength: 3
+    Default: sources-ir
+
+  S3SourcesPrefix:
+    Type: String
+    Description: S3 prefix with sources WITH ending slash if not empty. example myprefix/
+    Default: service/
+
+  TargetAccountSecurityRoleName:
+    Type: String
+    Description: Role to be assumed in the target account for incident response(IR)
+    Default: Security-IR-Role
+
+  SecurityTagKey:
+    Type: String
+    Description: Tag Key marker for approved security exception
+    Default: SecurityException
+
+  AllowedNetworkRangeIPv4:
+    Type: String
+    Description: Allowed CIDRv4 for Security Group to confine 0.0.0.0/0
+    Default: 172.31.0.0/16
+
+  AllowedNetworkRangeIPv6:
+    Type: String
+    Description: Allowed CIDRv6 for Security Group to confine 0.0.0.0/0
+    Default: fe80::/10
+
+  IsolateEc2Findings:
+    Description: Define Guard Duty findings that lead to EC2 isolation. Comma delimited
+    Type: CommaDelimitedList 
+    Default: Trojan:EC2/DNSDataExfiltration, Backdoor:EC2/Spambot, Backdoor:EC2/C&CActivity.B!DNS, Backdoor:EC2/DenialOfService.Tcp, Backdoor:EC2/DenialOfService.Udp, Backdoor:EC2/DenialOfService.Dns, Backdoor:EC2/DenialOfService.UdpOnTcpPorts, Backdoor:EC2/DenialOfService.UnusualProtocol, Trojan:EC2/BlackholeTraffic, Trojan:EC2/DropPoint, Trojan:EC2/BlackholeTraffic!DNS, Trojan:EC2/DriveBySourceTraffic!DNS, Trojan:EC2/DropPoint!DNS, Trojan:EC2/DGADomainRequest.B, Trojan:EC2/DGADomainRequest.C!DNS, Trojan:EC2/DNSDataExfiltration, Trojan:EC2/PhishingDomainRequest!DNS
+
+  BlockPrincipalFindings:
+    Description: Define Guard Duty findings that lead to blocking princile. Comma delimited
+    Type: CommaDelimitedList 
+    Default: UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration,UnauthorizedAccess:IAMUser/TorIPCaller, UnauthorizedAccess:IAMUser/MaliciousIPCaller.Custom, UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B, UnauthorizedAccess:IAMUser/MaliciousIPCaller 
+  
+  PrincipalOrgID:
+    Type: String
+    Description: Provide your Organization ID. It will be authorized to send Findings to Cloud Watch Event Bus. Put Star(*) to authorize everyone(dangerous)
+    Default: o-1234567890
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+    - Label:
+        default: General
+      Parameters:
+      - S3BucketSources
+      - S3SourcesPrefix
+    - Label:
+        default: Security
+      Parameters:
+      - TargetAccountSecurityRoleName
+      - SecurityTagKey
+      - PrincipalOrgID  
+    - Label:
+        default: Incident Response
+      Parameters:
+      - AllowedNetworkRangeIPv4
+      - AllowedNetworkRangeIPv6
+      - IsolateEc2Findings
+      - BlockPrincipalFindings  
+
+    ParameterLabels:
+      S3BucketSources:
+        default: S3 Bucket with sources 
+      S3SourcesPrefix:
+        default: Prefix for S3 bucket with sources 
+      TargetAccountSecurityRoleName:
+        default: Security IR Role Name 
+      SecurityTagKey:
+        default: Security Exception Tag 
+      PrincipalOrgID:
+        default: Organization Id
+      AllowedNetworkRangeIPv4:
+        default: Allowed Network Range IPv4
+      BlockPrincipalFindings: 
+        default: Block Printcipal Finding
+      IsolateEc2Findings: 
+        default: Isolate EC2 Findings
+      AllowedNetworkRangeIPv6:
+        default: Allowed Network Range IPv6
+  
+Resources:
+
+# Copy the regional S3 lambda functions
+  RegionalS3Objects:
+     Type: "AWS::CloudFormation::Stack" 
+     Properties:
+        TemplateURL: !Sub "https://s3.amazonaws.com/${S3BucketSources}/${S3SourcesPrefix}copy-s3obj-to-regional-s3bucket.yaml"
+        Parameters:
+          S3BucketSources: !Ref S3BucketSources
+          S3SourcesPrefix: !Ref S3SourcesPrefix
+          S3Objects: "master_lambda_functions.zip,copy-s3obj-to-regional-s3bucket.yaml,master-account-custom-actions-sec-hub.yaml"
+        Tags:
+         - Key: Name
+           Value: !Sub '${AWS::StackName}-CopyRegionalS3Bucket-NestedStack'
+
+  SecurityHubActionsStack:
+     Type: "AWS::CloudFormation::Stack" 
+     Properties:
+        TemplateURL: !Sub "https://s3.amazonaws.com/${RegionalS3Objects.Outputs.RegionalS3Bucket}/${S3SourcesPrefix}master-account-custom-actions-sec-hub.yaml" 
+        Parameters:
+          LambdaIsolateEc2Arn: !GetAtt IsolateEC2Lambda.Arn
+          LambdaBlockPrincipalArn: !GetAtt BlockPrincipalGroupLambda.Arn 
+          AlertSnsArn: !Ref Alerts
+          S3BucketSources: !GetAtt RegionalS3Objects.Outputs.RegionalS3Bucket
+          S3SourcesPrefix: !Ref S3SourcesPrefix
+        Tags:
+         - Key: Name
+           Value: !Sub '${AWS::StackName}-SecurityHubActions-NestedStack'
+
+  IsolateEC2Lambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub "IsolateEc2-${AWS::StackName}"
+      Handler: isolate_ec2_lambda_function.lambda_handler
+      Runtime: python3.7
+      Code:
+        S3Bucket: !GetAtt RegionalS3Objects.Outputs.RegionalS3Bucket
+        S3Key: !Sub '${S3SourcesPrefix}master_lambda_functions.zip'
+      Description: 'Isolates an EC2 with empty secyrity group'
+      Timeout: 21
+      Role: !GetAtt IncidentResponseLambdaRole.Arn
+      Environment:
+        Variables:
+          SecurityTagKey: !Ref SecurityTagKey
+          TargetAccountSecurityRoleName: !Ref TargetAccountSecurityRoleName
+          AlertsSns: !Ref Alerts
+
+  StartSsmAutomatonLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub "StratSsmAutomation-${AWS::StackName}"
+      Handler: start_ssm_automation_lambda_function.lambda_handler
+      Runtime: python3.7
+      Code:
+        S3Bucket: !GetAtt RegionalS3Objects.Outputs.RegionalS3Bucket
+        S3Key: !Sub '${S3SourcesPrefix}master_lambda_functions.zip'
+      Description: 'Execute SSM automation document'
+      Timeout: 22
+      Role: !GetAtt IncidentResponseLambdaRole.Arn
+      Environment:
+        Variables:
+          SecurityTagKey: !Ref SecurityTagKey
+          TargetAccountSecurityRoleName: !Ref TargetAccountSecurityRoleName
+          AlertsSns: !Ref Alerts
+  
+  ConfineSecurityGroupLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub "ConfineSecurityGroup-${AWS::StackName}"
+      Handler: confine_secgr_lambda_function.lambda_handler
+      Runtime: python3.7
+      Code:
+        S3Bucket: !GetAtt RegionalS3Objects.Outputs.RegionalS3Bucket
+        S3Key: !Sub '${S3SourcesPrefix}master_lambda_functions.zip'
+      Description: 'Confines a Security Group if open to public'
+      Timeout: 22
+      Role: !GetAtt IncidentResponseLambdaRole.Arn
+      Environment:
+        Variables:
+          SecurityTagKey: !Ref SecurityTagKey
+          AllowedNetworkRangeIPv4: !Ref AllowedNetworkRangeIPv4
+          AllowedNetworkRangeIPv6: !Ref AllowedNetworkRangeIPv6
+          TargetAccountSecurityRoleName: !Ref TargetAccountSecurityRoleName
+          AlertsSns: !Ref Alerts
+
+  BlockPrincipalGroupLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub "BlockPrincipal-${AWS::StackName}"
+      Handler: deactivate_principal_lambda_function.lambda_handler
+      Runtime: python3.7
+      Code:
+        S3Bucket: !GetAtt RegionalS3Objects.Outputs.RegionalS3Bucket
+        S3Key: !Sub '${S3SourcesPrefix}master_lambda_functions.zip'
+      Description: 'Attaches deny all policy to a principal'
+      Timeout: 22
+      Role: !GetAtt IncidentResponseLambdaRole.Arn
+      Environment:
+        Variables:
+          SecurityTagKey: !Ref SecurityTagKey
+          TargetAccountSecurityRoleName: !Ref TargetAccountSecurityRoleName
+          BlockPolicyArn: arn:aws:iam::aws:policy/AWSDenyAll
+          AlertsSns: !Ref Alerts
+
+  IncidentResponseLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub "IncidentResponse-${AWS::Region}"
+      Path: /
+      AssumeRolePolicyDocument:
+         Version: "2012-10-17"
+         Statement:
+              Effect: Allow
+              Principal:
+                Service: "lambda.amazonaws.com"
+              Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+       - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+      Policies:
+       - PolicyName: lambda-sec-IR
+         PolicyDocument:
+             Version: '2012-10-17'
+             Statement:
+              - Action:
+                - sts:AssumeRole
+                Resource: 
+                   - arn:aws:iam::*:role/AWS-SystemsManager-AutomationExecutionRole
+                   - !Sub "arn:aws:iam::*:role/${TargetAccountSecurityRoleName}"
+                Effect: Allow
+              - Action:
+                - organizations:ListAccountsForParent
+                Resource:
+                  - !Sub "arn:aws:organizations::${AWS::AccountId}:account/*"
+                Effect: Allow
+              - Effect: Allow
+                Action:
+                  - ssm:StartAutomationExecution
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sns:Publish 
+                Resource: !Ref Alerts   
+
+  eventGuardDutyIsolate:
+     Type: "AWS::Events::Rule"
+     Properties:
+       Description: Event to isolate an instance if no exception defined
+       Name: !Sub "IsolateEc2onGD-${AWS::StackName}"
+       EventPattern: 
+         source:
+         - aws.guardduty
+         detail-type:
+         - GuardDuty Finding
+         detail:
+           type: !Ref IsolateEc2Findings
+       Targets: 
+           - 
+             Arn: 
+               !GetAtt IsolateEC2Lambda.Arn
+             Id: 'IsolateEC2-lmb'
+           -
+            Arn: !Ref Alerts
+            Id: "IsolateEC2-sns"
+
+  PermissionForEventsIsolate: 
+     Type: "AWS::Lambda::Permission"
+     Properties: 
+        FunctionName: !Sub "IsolateEc2-${AWS::StackName}"
+        Action: "lambda:InvokeFunction"
+        Principal: "events.amazonaws.com"
+        SourceArn:  !GetAtt eventGuardDutyIsolate.Arn
+
+  eventGuardDutyBlockPrincipal:
+     Type: "AWS::Events::Rule"
+     Properties:
+       Description: Event block principals
+       Name: !Sub "DisablePrincipalOnGD-${AWS::StackName}"
+       EventPattern: 
+         source:
+         - aws.guardduty
+         detail-type:
+         - GuardDuty Finding
+         detail:
+           type: !Ref BlockPrincipalFindings
+       Targets: 
+           - 
+             Arn: 
+               !GetAtt BlockPrincipalGroupLambda.Arn
+             Id: 'BlockPrincipal-lmb'
+           -
+            Arn: !Ref Alerts
+            Id: "BlockPrincipal-sns"
+
+  PermissionForBlockPrincipal: 
+     Type: "AWS::Lambda::Permission"
+     Properties: 
+        FunctionName: !Sub "BlockPrincipal-${AWS::StackName}"
+        Action: "lambda:InvokeFunction"
+        Principal: "events.amazonaws.com"
+        SourceArn:  !GetAtt eventGuardDutyBlockPrincipal.Arn
+
+  eventEnableDefaultEncryption:
+     Type: "AWS::Events::Rule"
+     Properties:
+       Description: Enable S3 default encryption
+       Name: !Sub "S3EnableDefaultEncryption-${AWS::StackName}"
+       EventPattern: 
+        source:
+        - aws.config
+        detail-type:
+        - Config Rules Compliance Change
+        detail:
+          messageType:
+          - ComplianceChangeNotification
+          configRuleName:
+          - S3_BUCKET_SERVER_SIDE_ENCRYPTION_ENABLED
+          newEvaluationResult:
+            complianceType:
+            - NON_COMPLIANT
+       Targets:
+           - 
+             InputTransformer:
+               InputPathsMap:
+                 resourceId: "$.detail.resourceId"
+                 account: "$.account"
+               InputTemplate: '{ "account": <account>, "resourseType": "s3", "resourceId": <resourceId>, "AutomationDocumentName": "AWS-EnableS3BucketEncryption", "AutomationParameters": { "BucketName": [ <resourceId> ] } }'
+             Arn: 
+               !GetAtt StartSsmAutomatonLambda.Arn
+             Id: 'EnableS3Encryption-lmb'
+           -
+            Arn: !Ref Alerts
+            Id: "S3EnableSSE-sns"
+
+  PermissionEnableDefaultEncryption: 
+     Type: "AWS::Lambda::Permission"
+     Properties: 
+        FunctionName: !Sub "StratSsmAutomation-${AWS::StackName}"
+        Action: "lambda:InvokeFunction"
+        Principal: "events.amazonaws.com"
+        SourceArn: !GetAtt eventEnableDefaultEncryption.Arn
+
+  eventS3DisablePublicReadWrite:
+     Type: "AWS::Events::Rule"
+     Properties:
+       Description: Disable public read write for S3 bucket
+       Name: !Sub "S3BlockPublicWirteRead-${AWS::StackName}"
+       EventPattern: 
+        source:
+        - aws.config
+        detail-type:
+        - Config Rules Compliance Change
+        detail:
+          messageType:
+          - ComplianceChangeNotification
+          configRuleName:
+          - S3_BUCKET_PUBLIC_WRITE_PROHIBITED
+          - S3_BUCKET_PUBLIC_READ_PROHIBITED
+          newEvaluationResult:
+            complianceType:
+            - NON_COMPLIANT
+       Targets:
+           - 
+             InputTransformer:
+               InputPathsMap:
+                 resourceId: "$.detail.resourceId"
+                 account: "$.account"
+               InputTemplate: '{ "account": <account>, "resourseType": "s3", "resourceId": <resourceId>, "AutomationDocumentName": "AWS-DisableS3BucketPublicReadWrite", "AutomationParameters": { "S3BucketName": [ <resourceId> ] } }'
+             Arn: 
+               !GetAtt StartSsmAutomatonLambda.Arn
+             Id: 'DisablePublicReadWrite-lmb'
+           -
+            Arn: !Ref Alerts
+            Id: "S3PubWriteRead-sns"
+  
+  PermissionDisablePublicReadWrite: 
+     Type: "AWS::Lambda::Permission"
+     Properties: 
+        FunctionName: !Sub "StratSsmAutomation-${AWS::StackName}"
+        Action: "lambda:InvokeFunction"
+        Principal: "events.amazonaws.com"
+        SourceArn:  !GetAtt eventS3DisablePublicReadWrite.Arn
+
+  eventConfineSecurityGroup:
+     Type: "AWS::Events::Rule"
+     Properties:
+       Description: Confine Security Group if open 
+       Name: !Sub "ConfineSecGroup-${AWS::StackName}"
+       EventPattern: 
+        source:
+        - aws.config
+        detail-type:
+        - Config Rules Compliance Change
+        detail:
+          messageType:
+          - ComplianceChangeNotification
+          configRuleName:
+          - SECURITY_GROUP_OPEN_PROHIBITED
+          newEvaluationResult:
+            complianceType:
+            - NON_COMPLIANT
+       Targets:
+           - 
+             Arn: !GetAtt ConfineSecurityGroupLambda.Arn
+             Id: 'SecurityGroupOpen-lmb'
+           -
+            Arn: !Ref Alerts
+            Id: "SecurityGroupOpenAlert-sns"
+
+  PermissionEventConfineSecurityGroup: 
+     Type: "AWS::Lambda::Permission"
+     Properties: 
+       FunctionName: !Sub "ConfineSecurityGroup-${AWS::StackName}"
+       Action: "lambda:InvokeFunction"
+       Principal: "events.amazonaws.com"
+       SourceArn:  !GetAtt eventConfineSecurityGroup.Arn
+
+  eventEncryptedVolumeRDS:
+     Type: "AWS::Events::Rule"
+     Properties:
+       Description: Disable public read write for S3 bucket
+       Name: !Sub "EncryptedVolumeRDS-${AWS::StackName}"
+       EventPattern: 
+        source:
+        - aws.config
+        detail-type:
+        - Config Rules Compliance Change
+        detail:
+          messageType:
+          - ComplianceChangeNotification
+          configRuleName:
+          - ENCRYPTED_VOLUMES
+          - RDS_STORAGE_ENCRYPTED
+          newEvaluationResult:
+            complianceType:
+            - NON_COMPLIANT
+       Targets:
+           -
+            Arn: !Ref Alerts
+            Id: "S3PubWriteRead-sns"
+
+  Alerts: 
+     Type: "AWS::SNS::Topic"
+     Properties: 
+       DisplayName: "Security Automation"
+       TopicName: !Sub "Security_Alerts_${AWS::StackName}"
+
+  EventTopicPolicy:
+     Type: 'AWS::SNS::TopicPolicy'
+     Properties:
+       PolicyDocument:
+         Statement:
+           - Sid: "default"
+             Effect: Allow
+             Principal:
+               AWS: "*"
+             Action: 
+              - sns:GetTopicAttributes
+              - sns:SetTopicAttributes
+              - sns:AddPermission
+              - sns:RemovePermission
+              - sns:DeleteTopic
+              - sns:Subscribe
+              - sns:ListSubscriptionsByTopic
+              - sns:Publish
+              - sns:Receive
+             Condition:
+                StringEquals:
+                        AWS:SourceOwner: !Ref AWS::AccountId
+             Resource: 
+                - !Ref Alerts   
+           - Sid: "send"
+             Effect: Allow
+             Principal:
+               Service: events.amazonaws.com
+             Action: 'sns:Publish'
+             Resource: 
+                - !Ref Alerts   
+       Topics:
+         - !Ref Alerts 
+
+  EventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+        Action: "events:PutEvents"
+        StatementId: "AllowAllOrg"
+        Principal: "*"
+        Condition:
+            Type: "StringEquals"
+            Key: "aws:PrincipalOrgID"
+            Value: !Ref PrincipalOrgID
+
+  BlockPrincipalErrorAlarm:
+     Type: AWS::CloudWatch::Alarm
+     Properties:
+        AlarmDescription: "Alarm block principal functions"
+        AlarmName: !Sub "Block principal function (${AWS::StackName})"
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+         - Name: FunctionName
+           Value: !Ref BlockPrincipalGroupLambda
+        Statistic: Sum
+        Period: 3600
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:           
+         - !Ref Alerts
+
+  ConfineSecGrErrorAlarm:
+     Type: AWS::CloudWatch::Alarm
+     Properties:
+        AlarmDescription: "Alarm confine security group  functions"
+        AlarmName: !Sub "Confine SecGr function (${AWS::StackName})"
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+         - Name: FunctionName
+           Value: !Ref ConfineSecurityGroupLambda
+        Statistic: Sum
+        Period: 3600
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:           
+         - !Ref Alerts
+  
+  StartSsmErrorAlarm:
+     Type: AWS::CloudWatch::Alarm
+     Properties:
+        AlarmDescription: "Alarm start SSM automation functions"
+        AlarmName: !Sub "Start SSM automation function (${AWS::StackName})"
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+         - Name: FunctionName
+           Value: !Ref StartSsmAutomatonLambda
+        Statistic: Sum
+        Period: 3600
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:           
+         - !Ref Alerts
+
+  IsolateEC2ErrorAlarm:
+     Type: AWS::CloudWatch::Alarm
+     Properties:
+        AlarmDescription: "Alarm EC2 isolate functions"
+        AlarmName: !Sub "EC2 isolate function (${AWS::StackName})"
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+         - Name: FunctionName
+           Value: !Ref IsolateEC2Lambda
+        Statistic: Sum
+        Period: 3600
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:           
+         - !Ref Alerts
