@@ -21,12 +21,12 @@ Parameters:
     Description: S3 bucket with sources 
     MaxLength: 63
     MinLength: 3
-    Default: sources-ir
+    Default: awsiammedia
 
   S3SourcesPrefix:
     Type: String
     Description: S3 prefix with sources WITH ending slash if not empty. example myprefix/
-    Default: service/
+    Default: public/sample/AutomatedIncidentResponse319/
 
   TargetAccountSecurityRoleName:
     Type: String
