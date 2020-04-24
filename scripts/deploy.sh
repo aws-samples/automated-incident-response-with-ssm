@@ -54,6 +54,7 @@ if  [ "${bucket: -1}" = "/" ]; then
 	echo "removed slash at the end of $bucket" 
 fi
 
+[ ! -d "dist" ] && mkdir dist
 zip -jr  "./dist/${type}_lambda_functions.zip"     "./src/functions/${type}-acc"
 aws s3 cp --exclude ".*" --recursive "./src/cfn/${type}-acc/"   "$bucket/${type}" --profile "$profile" --region "$region"
 aws s3 cp "./dist/${type}_lambda_functions.zip"  "$bucket/${type}/" --profile "$profile" --region "$region"
