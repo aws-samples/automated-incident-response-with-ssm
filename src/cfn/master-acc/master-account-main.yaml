@@ -54,7 +54,7 @@ Parameters:
     Default: Trojan:EC2/DNSDataExfiltration, Backdoor:EC2/Spambot, Backdoor:EC2/C&CActivity.B!DNS, Backdoor:EC2/DenialOfService.Tcp, Backdoor:EC2/DenialOfService.Udp, Backdoor:EC2/DenialOfService.Dns, Backdoor:EC2/DenialOfService.UdpOnTcpPorts, Backdoor:EC2/DenialOfService.UnusualProtocol, Trojan:EC2/BlackholeTraffic, Trojan:EC2/DropPoint, Trojan:EC2/BlackholeTraffic!DNS, Trojan:EC2/DriveBySourceTraffic!DNS, Trojan:EC2/DropPoint!DNS, Trojan:EC2/DGADomainRequest.B, Trojan:EC2/DGADomainRequest.C!DNS, Trojan:EC2/DNSDataExfiltration, Trojan:EC2/PhishingDomainRequest!DNS
 
   BlockPrincipalFindings:
-    Description: Define Guard Duty findings that lead to blocking princile. Comma delimited
+    Description: Define Guard Duty findings that lead to blocking principle. Comma delimited
     Type: CommaDelimitedList 
     Default: UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration,UnauthorizedAccess:IAMUser/TorIPCaller, UnauthorizedAccess:IAMUser/MaliciousIPCaller.Custom, UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B, UnauthorizedAccess:IAMUser/MaliciousIPCaller 
   
@@ -99,7 +99,7 @@ Metadata:
       AllowedNetworkRangeIPv4:
         default: Allowed Network Range IPv4
       BlockPrincipalFindings: 
-        default: Block Printcipal Finding
+        default: Block Principal Finding
       IsolateEc2Findings: 
         default: Isolate EC2 Findings
       AllowedNetworkRangeIPv6:
