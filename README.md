@@ -12,7 +12,7 @@ In this solution, you’ll use [AWS Systems Manager Automation](https://docs.aws
 
 The code and automation runbooks are implemented in a central security account. You will use the central security account to execute the incident response actions. You won’t need to take any actions in the service accounts where you’re monitoring and responding to incidents.
 
-For more information please see our **AWS Security Blog** on "Introduction to performing automated incident response in a large, multi-account environment with exception handling"
+For more information please see our **AWS Security Blog** on [How to perform automated incident response in a multi-account environment](https://aws.amazon.com/blogs/security/how-to-perform-automated-incident-response-multi-account-environment/)
 
 ## How to deploy from Github
 

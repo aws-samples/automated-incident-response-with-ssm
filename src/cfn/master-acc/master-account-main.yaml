@@ -45,7 +45,7 @@ Parameters:
 
   AllowedNetworkRangeIPv6:
     Type: String
-    Description: Allowed CIDRv6 for Security Group to confine 0.0.0.0/0
+    Description: Allowed CIDRv6 for Security Group to confine ::/0
     Default: fe80::/10
 
   IsolateEc2Findings:
@@ -425,7 +425,7 @@ Resources:
   eventEncryptedVolumeRDS:
      Type: "AWS::Events::Rule"
      Properties:
-       Description: Disable public read write for S3 bucket
+       Description: Encryption enabled for RDS DB instances
        Name: !Sub "EncryptedVolumeRDS-${AWS::StackName}"
        EventPattern: 
         source:
